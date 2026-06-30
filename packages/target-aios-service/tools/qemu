@@ -8,8 +8,40 @@ shift 2 || true
 target="aios-service"
 artifact_type="img"
 out_dir="dist-aios"
-target_version="0.0.1-alpha.1"
+target_version="0.0.1-alpha.2"
 arch="${AIOS_ARCH:-x86_64}"
+features=""
+debug_console="${AIOS_DEBUG_CONSOLE:-none}"
+
+apply_target_option() {
+  assignment="$1"
+  name="${assignment%%=*}"
+  value="${assignment#*=}"
+  if [ "$name" = "$assignment" ]; then
+    echo "Err#err1(code=AIOS001 message=\"Invalid target option. Expected name=value: $assignment\" nodeId=aios)" >&2
+    exit 2
+  fi
+  case "$name" in
+    arch) arch="$value" ;;
+    feature) features="$features $value" ;;
+    debug-console) debug_console="$value" ;;
+    *)
+      echo "Err#err1(code=AIOS001 message=\"Unsupported aios-service target option: $name\" nodeId=aios)" >&2
+      exit 2
+      ;;
+  esac
+}
+
+has_qemu_arg() {
+  wanted="$1"
+  shift
+  for arg in "$@"; do
+    if [ "$arg" = "$wanted" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -28,6 +60,34 @@ while [ "$#" -gt 0 ]; do
     --arch)
       arch="${2:-}"
       shift 2
+      ;;
+    --arch=*)
+      arch="${1#--arch=}"
+      shift
+      ;;
+    --feature)
+      features="$features ${2:-}"
+      shift 2
+      ;;
+    --feature=*)
+      features="$features ${1#--feature=}"
+      shift
+      ;;
+    --debug-console)
+      debug_console="${2:-}"
+      shift 2
+      ;;
+    --debug-console=*)
+      debug_console="${1#--debug-console=}"
+      shift
+      ;;
+    --target-option)
+      apply_target_option "${2:-}"
+      shift 2
+      ;;
+    --target-option=*)
+      apply_target_option "${1#--target-option=}"
+      shift
       ;;
     --out)
       out_dir="${2:-}"
@@ -53,6 +113,35 @@ case "$artifact_type" in
     exit 2
     ;;
 esac
+
+case "$arch" in
+  x86_64|aarch64) ;;
+  *)
+    echo "Err#err1(code=AIOS010 message=\"Unsupported AiOS architecture: $arch\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
+case "$debug_console" in
+  none|stdio) ;;
+  *)
+    echo "Err#err1(code=AIOS016 message=\"Unsupported AiOS debug console: $debug_console\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
+network_enabled=0
+for feature in $features; do
+  case "$feature" in
+    network)
+      network_enabled=1
+      ;;
+    *)
+      echo "Err#err1(code=AIOS014 message=\"Unsupported AiOS feature: $feature\" nodeId=aios)" >&2
+      exit 2
+      ;;
+  esac
+done
 
 ailang_bin="${AILANG_BIN:-ailang}"
 cache_root="${AIOS_CACHE_ROOT:-${HOME:-.}/.ailang/cache/aios}"
@@ -93,10 +182,46 @@ initramfs = "rootfs.cpio.gz"
 EOF
 
 if [ "$operation" = "run" ]; then
-  exec qemu-system-x86_64 \
+  debug_console_args=""
+  network_args=""
+  qemu_bin=""
+  qemu_machine_args=""
+  qemu_append_console=""
+  case "$arch" in
+    x86_64)
+      qemu_bin="qemu-system-x86_64"
+      qemu_append_console="console=ttyS0"
+      if [ "$network_enabled" = "1" ] && ! has_qemu_arg "-netdev" "$@"; then
+        network_args="-netdev user,id=aiosnet -device e1000,netdev=aiosnet"
+      fi
+      ;;
+    aarch64)
+      qemu_bin="qemu-system-aarch64"
+      qemu_machine_args="-machine virt -cpu max"
+      qemu_append_console="console=ttyAMA0"
+      if [ "$network_enabled" = "1" ] && ! has_qemu_arg "-netdev" "$@"; then
+        network_args="-netdev user,id=aiosnet -device virtio-net-device,netdev=aiosnet"
+      fi
+      ;;
+  esac
+  if ! command -v "$qemu_bin" >/dev/null 2>&1; then
+    echo "Err#err1(code=AIOS022 message=\"Required QEMU runner is not installed for AiOS $arch: $qemu_bin\" nodeId=aios)" >&2
+    exit 2
+  fi
+  if [ "$debug_console" = "stdio" ] && ! has_qemu_arg "-serial" "$@"; then
+    debug_console_args="-serial stdio"
+  fi
+  if [ "$debug_console" = "stdio" ]; then
+    echo "AiOS debug console: stdio serial enabled for $target $target_version" >&2
+  fi
+  # shellcheck disable=SC2086
+  exec "$qemu_bin" \
+    $qemu_machine_args \
     -kernel "$out_dir/bzImage" \
     -initrd "$out_dir/rootfs.cpio.gz" \
-    -append "console=ttyS0 ailang.target=aios-service ailang.app=app.aibc1" \
+    -append "$qemu_append_console ailang.target=aios-service ailang.app=app.aibc1" \
+    $debug_console_args \
+    $network_args \
     "$@"
 fi
 
