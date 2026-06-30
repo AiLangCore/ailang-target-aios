@@ -8,7 +8,8 @@ shift 2 || true
 target="aios-service"
 artifact_type="img"
 out_dir="dist-aios"
-target_version="0.0.1-alpha.2"
+target_version="0.0.1-alpha.3"
+base_version="${AIOS_BASE_VERSION:-0.0.1-alpha.1}"
 arch="${AIOS_ARCH:-x86_64}"
 features=""
 debug_console="${AIOS_DEBUG_CONSOLE:-none}"
@@ -23,6 +24,7 @@ apply_target_option() {
   fi
   case "$name" in
     arch) arch="$value" ;;
+    base-version) base_version="$value" ;;
     feature) features="$features $value" ;;
     debug-console) debug_console="$value" ;;
     *)
@@ -56,6 +58,14 @@ while [ "$#" -gt 0 ]; do
     --target-version|--aios-version)
       target_version="${2:-}"
       shift 2
+      ;;
+    --base-version)
+      base_version="${2:-}"
+      shift 2
+      ;;
+    --base-version=*)
+      base_version="${1#--base-version=}"
+      shift
       ;;
     --arch)
       arch="${2:-}"
@@ -145,13 +155,13 @@ done
 
 ailang_bin="${AILANG_BIN:-ailang}"
 cache_root="${AIOS_CACHE_ROOT:-${HOME:-.}/.ailang/cache/aios}"
-base_dir="$cache_root/base/$target/$target_version/$arch"
+base_dir="$cache_root/base/$target/$base_version/$arch"
 base_manifest="$base_dir/manifest.toml"
 base_kernel="$base_dir/bzImage"
 base_initramfs="$base_dir/rootfs.cpio.gz"
 
 if [ ! -f "$base_manifest" ] || [ ! -f "$base_kernel" ] || [ ! -f "$base_initramfs" ]; then
-  echo "Err#err1(code=AIOS004 message=\"AiOS service base image is not built. Run: ailang aios build-base --target $target --version $target_version --arch $arch\" nodeId=aios)" >&2
+  echo "Err#err1(code=AIOS004 message=\"AiOS service base image is not built. Run on Linux: ailang aios build-base --target $target --version $base_version --arch $arch, or import an existing base with that version.\" nodeId=aios)" >&2
   exit 2
 fi
 
@@ -172,6 +182,7 @@ cat > "$out_dir/manifest.toml" <<EOF
 schema = "ailang.aios.image.v1"
 target = "$target"
 aiosVersion = "$target_version"
+baseVersion = "$base_version"
 arch = "$arch"
 profile = "service"
 artifactType = "$artifact_type"
