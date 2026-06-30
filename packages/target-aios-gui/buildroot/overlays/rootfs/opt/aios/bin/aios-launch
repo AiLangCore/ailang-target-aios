@@ -1,0 +1,18 @@
+#!/bin/sh
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+export AILANG_RUNTIME_TARGET="${AILANG_RUNTIME_TARGET:-aios-gui}"
+export AILANG_RUNTIME_PLATFORM="${AILANG_RUNTIME_PLATFORM:-desktop}"
+
+if [ -x /opt/aios/bin/aivectra ] && [ -f /opt/aios/app/app.aibc1 ]; then
+  exec /opt/aios/bin/aivectra run /opt/aios/app/app.aibc1
+fi
+
+if [ -x /opt/aios/bin/aivm ] && [ -f /opt/aios/app/app.aibc1 ]; then
+  exec /opt/aios/bin/aivm /opt/aios/app/app.aibc1
+fi
+
+echo "AiOS GUI base booted without an injected app payload."
+exec sh

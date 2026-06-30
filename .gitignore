@@ -1,0 +1,8 @@
+.DS_Store
+.ailang/
+.artifacts/
+.tmp/
+dist/
+dist-aios/
+*.aibc1
+*.log
