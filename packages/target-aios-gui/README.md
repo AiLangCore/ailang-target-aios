@@ -58,13 +58,13 @@ Build reusable AiOS GUI bases on Linux:
 ```sh
 ailang aios build-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch x86_64 \
   --buildroot-version 2026.02.3
 
 ailang aios build-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch aarch64 \
   --buildroot-version 2026.02.3
 ```
@@ -74,12 +74,12 @@ Verify the cached base:
 ```sh
 ailang aios verify-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch x86_64
 
 ailang aios verify-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch aarch64
 ```
 
@@ -88,15 +88,15 @@ Import a base artifact downloaded from CI:
 ```sh
 ailang aios import-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch x86_64 \
-  --from ./aios-gui-0.0.1-alpha.4-x86_64
+  --from ./aios-gui-0.0.1-alpha.1-x86_64
 
 ailang aios import-base \
   --target aios-gui \
-  --version 0.0.1-alpha.4 \
+  --version 0.0.1-alpha.1 \
   --arch aarch64 \
-  --from ./aios-gui-0.0.1-alpha.4-aarch64
+  --from ./aios-gui-0.0.1-alpha.1-aarch64
 ```
 
 Run an app with the cached base:
@@ -104,7 +104,8 @@ Run an app with the cached base:
 ```sh
 ailang run . \
   --target aios-gui \
-  --target-version 0.0.1-alpha.4 \
+  --target-version 0.0.1-alpha.5
+  --target-option base-version=0.0.1-alpha.1 \
   --boot qemu-kernel \
   --image cpio.gz \
   --partition none
@@ -119,7 +120,8 @@ To keep the QEMU window and mirror the serial boot/app log into the terminal:
 ```sh
 ailang run . \
   --target aios-gui \
-  --target-version 0.0.1-alpha.4 \
+  --target-version 0.0.1-alpha.5
+  --target-option base-version=0.0.1-alpha.1 \
   --target-option debug-console=stdio
 ```
 
@@ -128,7 +130,8 @@ For terminal-only diagnostics, pass QEMU display flags after `--`:
 ```sh
 ailang run . \
   --target aios-gui \
-  --target-version 0.0.1-alpha.4 \
+  --target-version 0.0.1-alpha.5
+  --target-option base-version=0.0.1-alpha.1 \
   --target-option debug-console=stdio \
   -- -display none -no-reboot
 ```
@@ -139,7 +142,8 @@ Publish an app image without starting QEMU:
 ailang publish . \
   --target aios-gui \
   --type img \
-  --target-version 0.0.1-alpha.4 \
+  --target-version 0.0.1-alpha.5
+  --target-option base-version=0.0.1-alpha.1 \
   --boot qemu-kernel \
   --image cpio.gz \
   --partition none \

@@ -8,11 +8,16 @@ shift 2 || true
 target="aios-service"
 artifact_type="img"
 out_dir="dist-aios"
-target_version="0.0.1-alpha.4"
+target_version="0.0.1-alpha.5"
 base_version="${AIOS_BASE_VERSION:-0.0.1-alpha.1}"
-arch="${AIOS_ARCH:-x86_64}"
+default_arch="x86_64"
+case "$(uname -m 2>/dev/null || true)" in
+  arm64|aarch64) default_arch="aarch64" ;;
+esac
+arch="${AIOS_ARCH:-$default_arch}"
 features=""
 debug_console="${AIOS_DEBUG_CONSOLE:-none}"
+serial_console="ttyS0"
 
 apply_target_option() {
   assignment="$1"
@@ -125,7 +130,12 @@ case "$artifact_type" in
 esac
 
 case "$arch" in
-  x86_64|aarch64) ;;
+  x86_64)
+    serial_console="ttyS0"
+    ;;
+  aarch64)
+    serial_console="ttyAMA0"
+    ;;
   *)
     echo "Err#err1(code=AIOS010 message=\"Unsupported AiOS architecture: $arch\" nodeId=aios)" >&2
     exit 2
@@ -156,16 +166,189 @@ done
 ailang_bin="${AILANG_BIN:-ailang}"
 cache_root="${AIOS_CACHE_ROOT:-${HOME:-.}/.ailang/cache/aios}"
 base_dir="$cache_root/base/$target/$base_version/$arch"
+base_target="$target"
+if [ ! -f "$base_dir/manifest.toml" ] || [ ! -f "$base_dir/bzImage" ] || [ ! -f "$base_dir/rootfs.cpio.gz" ]; then
+  compatible_base_dir="$cache_root/base/aios-gui/$base_version/$arch"
+  if [ -f "$compatible_base_dir/manifest.toml" ] && [ -f "$compatible_base_dir/bzImage" ] && [ -f "$compatible_base_dir/rootfs.cpio.gz" ]; then
+    base_dir="$compatible_base_dir"
+    base_target="aios-gui"
+  fi
+fi
 base_manifest="$base_dir/manifest.toml"
 base_kernel="$base_dir/bzImage"
 base_initramfs="$base_dir/rootfs.cpio.gz"
+tmp_root=""
+
+cleanup() {
+  if [ -n "$tmp_root" ] && [ -d "$tmp_root" ]; then
+    rm -rf "$tmp_root"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+resolve_runtime_bin() {
+  env_name="$1"
+  default_name="$2"
+  shift 2
+  eval "env_value=\${$env_name:-}"
+  if [ -n "$env_value" ] && [ -f "$env_value" ]; then
+    printf '%s\n' "$env_value"
+    return 0
+  fi
+  for candidate in "$@"; do
+    if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+      case "$(file "$candidate" 2>/dev/null || true)" in
+        *"shell script"*|*"sh script"*) continue ;;
+      esac
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  if command -v "$default_name" >/dev/null 2>&1; then
+    command_path="$(command -v "$default_name")"
+    case "$(file "$command_path" 2>/dev/null || true)" in
+      *"shell script"*|*"sh script"*) ;;
+      *)
+        printf '%s\n' "$command_path"
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
+resolve_sdk_root() {
+  selector="${AILANG_TOOLCHAIN:-}"
+  if [ "$selector" = "local" ] && [ -d "${HOME:-}/.ailang/local" ]; then
+    printf '%s\n' "${HOME:-}/.ailang/local"
+    return 0
+  fi
+  if [ -n "$selector" ] && [ -d "${HOME:-}/.ailang/toolchains/$selector" ]; then
+    printf '%s\n' "${HOME:-}/.ailang/toolchains/$selector"
+    return 0
+  fi
+  if [ -L "${HOME:-}/.ailang/current" ] || [ -d "${HOME:-}/.ailang/current" ]; then
+    current_root=$(CDPATH= cd -- "${HOME:-}/.ailang/current" 2>/dev/null && pwd || true)
+    if [ -n "$current_root" ]; then
+      printf '%s\n' "$current_root"
+      return 0
+    fi
+  fi
+  bin_root=$(CDPATH= cd -- "$(dirname -- "$ailang_bin")/.." 2>/dev/null && pwd || true)
+  if [ -n "$bin_root" ]; then
+    printf '%s\n' "$bin_root"
+    return 0
+  fi
+  return 1
+}
+
+emit_launcher() {
+  launcher="$1"
+  cat > "$launcher" <<EOF
+#!/bin/sh
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /run /tmp /opt/aios
+
+if [ "$debug_console" = "stdio" ] && [ -c /dev/$serial_console ]; then
+  exec >/dev/$serial_console 2>&1
+  echo "AiOS service launcher: stdio debug console attached"
+fi
+
+export AILANG_RUNTIME_TARGET="\${AILANG_RUNTIME_TARGET:-aios-service}"
+export AILANG_RUNTIME_PLATFORM="\${AILANG_RUNTIME_PLATFORM:-server}"
+export AIOS_FEATURE_NETWORK="\${AIOS_FEATURE_NETWORK:-$network_enabled}"
+
+if [ "\${AIOS_FEATURE_NETWORK:-0}" = "1" ]; then
+  network_iface=""
+  for candidate in eth0 ens3 enp0s1 enp0s2; do
+    if [ -d "/sys/class/net/\$candidate" ]; then
+      network_iface="\$candidate"
+      break
+    fi
+  done
+  if [ -z "\$network_iface" ]; then
+    for candidate_path in /sys/class/net/*; do
+      candidate="\${candidate_path##*/}"
+      if [ "\$candidate" != "lo" ] && [ -d "\$candidate_path" ]; then
+        network_iface="\$candidate"
+        break
+      fi
+    done
+  fi
+  ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+  if [ -n "\$network_iface" ]; then
+    echo "AiOS service network: using interface \$network_iface"
+    ip link set "\$network_iface" up 2>/dev/null || ifconfig "\$network_iface" up 2>/dev/null || true
+    if [ -f /usr/share/udhcpc/default.script ]; then
+      udhcpc -i "\$network_iface" -n -q -s /usr/share/udhcpc/default.script 2>/dev/null || true
+    else
+      udhcpc -i "\$network_iface" -n -q 2>/dev/null || true
+    fi
+  else
+    echo "AiOS service network warning: no non-loopback interface found" >&2
+  fi
+  if [ ! -s /etc/resolv.conf ]; then
+    echo "nameserver 10.0.2.3" > /run/resolv.conf 2>/dev/null || true
+    ln -sf /run/resolv.conf /etc/resolv.conf 2>/dev/null || cp /run/resolv.conf /etc/resolv.conf 2>/dev/null || true
+  fi
+fi
+
+if [ -x /opt/aios/bin/aivm ]; then
+  /opt/aios/bin/aivm run /opt/aios/app/app.aibc1
+  status=\$?
+  echo "AiOS service exited with status \$status" >&2
+  poweroff -f 2>/dev/null || halt -f 2>/dev/null || exit "\$status"
+fi
+
+echo "AiOS service launch failed: /opt/aios/bin/aivm is missing" >&2
+exec sh
+EOF
+  chmod +x "$launcher"
+}
+
+inject_payload_initramfs() {
+  runtime_aivm="$1"
+  output_initramfs="$2"
+
+  if ! command -v gzip >/dev/null 2>&1 || ! command -v cpio >/dev/null 2>&1; then
+    echo 'Err#err1(code=AIOS007 message="AiOS service payload injection requires gzip and cpio." nodeId=aios)' >&2
+    exit 2
+  fi
+
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/aios-service-rootfs-XXXXXX")"
+  gzip -dc "$base_initramfs" | (cd "$tmp_root" && cpio -idmu >/dev/null 2>&1)
+
+  mkdir -p "$tmp_root/opt/aios/app" "$tmp_root/opt/aios/bin" "$tmp_root/opt/aios/etc"
+  cp "$app_aibc1" "$tmp_root/opt/aios/app/app.aibc1"
+  cp "$runtime_aivm" "$tmp_root/opt/aios/bin/aivm"
+  chmod +x "$tmp_root/opt/aios/bin/aivm"
+  emit_launcher "$tmp_root/opt/aios/bin/aios-service-launch"
+  emit_launcher "$tmp_root/init"
+
+  cat > "$tmp_root/opt/aios/etc/image.toml" <<EOF
+schema = "ailang.aios.runtime-image.v1"
+target = "$target"
+aiosVersion = "$target_version"
+baseTarget = "$base_target"
+baseVersion = "$base_version"
+arch = "$arch"
+profile = "service"
+app = "/opt/aios/app/app.aibc1"
+aivm = "/opt/aios/bin/aivm"
+EOF
+
+  (cd "$tmp_root" && find . | sort | cpio -o -H newc 2>/dev/null | gzip -n > "$output_initramfs")
+}
 
 if [ ! -f "$base_manifest" ] || [ ! -f "$base_kernel" ] || [ ! -f "$base_initramfs" ]; then
-  echo "Err#err1(code=AIOS004 message=\"AiOS service base image is not built. Run on Linux: ailang aios build-base --target $target --version $base_version --arch $arch, or import an existing base with that version.\" nodeId=aios)" >&2
+  echo "Err#err1(code=AIOS004 message=\"AiOS service base image is not built. Run on Linux: ailang aios build-base --target aios-gui --version $base_version --arch $arch, or import an existing compatible base with that version.\" nodeId=aios)" >&2
   exit 2
 fi
 
 mkdir -p "$out_dir"
+out_dir="$(CDPATH= cd -- "$out_dir" && pwd)"
 "$ailang_bin" build "$project" >/dev/null
 
 app_aibc1="$project/app.aibc1"
@@ -177,11 +360,36 @@ fi
 cp "$app_aibc1" "$out_dir/app.aibc1"
 cp "$base_manifest" "$out_dir/base.manifest.toml"
 cp "$base_kernel" "$out_dir/bzImage"
-cp "$base_initramfs" "$out_dir/rootfs.cpio.gz"
+
+sdk_root="$(resolve_sdk_root || true)"
+current_root="$(CDPATH= cd -- "${HOME:-}/.ailang/current" 2>/dev/null && pwd || true)"
+case "$arch" in
+  x86_64)
+    runtime_aivm="$(resolve_runtime_bin AIOS_AIVM_BIN aivm \
+      "${sdk_root:+$sdk_root/runtimes/linux-x64/aivm}" \
+      "${current_root:+$current_root/runtimes/linux-x64/aivm}" \
+      "${sdk_root:+$sdk_root/.artifacts/ailang-linux-x64/aivm-runtime}" \
+      "${current_root:+$current_root/.artifacts/ailang-linux-x64/aivm-runtime}" || true)"
+    ;;
+  aarch64)
+    runtime_aivm="$(resolve_runtime_bin AIOS_AIVM_BIN aivm \
+      "${sdk_root:+$sdk_root/runtimes/linux-arm64/aivm}" \
+      "${current_root:+$current_root/runtimes/linux-arm64/aivm}" \
+      "${sdk_root:+$sdk_root/.artifacts/ailang-linux-arm64/aivm-runtime}" \
+      "${current_root:+$current_root/.artifacts/ailang-linux-arm64/aivm-runtime}" || true)"
+    ;;
+esac
+if [ -z "$runtime_aivm" ]; then
+  echo "Err#err1(code=AIOS008 message=\"AiOS service image needs a Linux AiVM runtime. Set AIOS_AIVM_BIN or build SDK runtime artifacts for $arch.\" nodeId=aios)" >&2
+  exit 2
+fi
+
+inject_payload_initramfs "$runtime_aivm" "$out_dir/rootfs.cpio.gz"
 cat > "$out_dir/manifest.toml" <<EOF
 schema = "ailang.aios.image.v1"
 target = "$target"
 aiosVersion = "$target_version"
+baseTarget = "$base_target"
 baseVersion = "$base_version"
 arch = "$arch"
 profile = "service"

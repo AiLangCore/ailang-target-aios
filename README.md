@@ -5,7 +5,7 @@ This repository contains the official AiOS target packages for AiLang.
 AiOS is a shell-less Linux-based target profile for running AiLang applications
 directly as the system experience.
 
-Current package release: `0.0.1-alpha.4`.
+Current package release: `0.0.1-alpha.5`.
 
 ## Packages
 
@@ -77,7 +77,7 @@ ailang run . \
 AiOS uses reusable Buildroot base images. The target package version and base
 image version are intentionally separate.
 
-`target-aios-gui` `0.0.1-alpha.4` currently defaults to the compatible
+`target-aios-gui` `0.0.1-alpha.5` currently defaults to the compatible
 Buildroot base image `0.0.1-alpha.1`. This allows target tooling fixes to ship
 without forcing every developer to rebuild the Linux base.
 

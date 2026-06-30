@@ -8,9 +8,13 @@ shift 2 || true
 target="aios-gui"
 artifact_type="img"
 out_dir="dist-aios"
-target_version="0.0.1-alpha.4"
+target_version="0.0.1-alpha.5"
 base_version="${AIOS_BASE_VERSION:-0.0.1-alpha.1}"
-arch="${AIOS_ARCH:-x86_64}"
+default_arch="x86_64"
+case "$(uname -m 2>/dev/null || true)" in
+  arm64|aarch64) default_arch="aarch64" ;;
+esac
+arch="${AIOS_ARCH:-$default_arch}"
 splash_background=""
 splash_foreground=""
 boot_mode="qemu-kernel"

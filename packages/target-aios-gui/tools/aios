@@ -5,8 +5,12 @@ command="${1:-}"
 shift || true
 
 target="aios-gui"
-version="0.0.1-alpha.4"
-arch="${AIOS_ARCH:-x86_64}"
+version="0.0.1-alpha.5"
+default_arch="x86_64"
+case "$(uname -m 2>/dev/null || true)" in
+  arm64|aarch64) default_arch="aarch64" ;;
+esac
+arch="${AIOS_ARCH:-$default_arch}"
 buildroot_version="${AIOS_BUILDROOT_VERSION:-2026.02.3}"
 from_dir=""
 boot_mode="qemu-kernel"
@@ -352,7 +356,7 @@ EOF
     ;;
 
   *)
-    echo 'Usage: ailang aios <fetch-buildroot|build-base|verify-base|import-base|list-base|base-dir> [--target aios-gui] [--version 0.0.1-alpha.4] [--arch x86_64|aarch64] [--buildroot-version 2026.02.3] [--from artifact-dir]' >&2
+    echo 'Usage: ailang aios <fetch-buildroot|build-base|verify-base|import-base|list-base|base-dir> [--target aios-gui] [--version 0.0.1-alpha.1] [--arch x86_64|aarch64] [--buildroot-version 2026.02.3] [--from artifact-dir]' >&2
     exit 2
     ;;
 esac
