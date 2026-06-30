@@ -23,6 +23,7 @@ require_executable() {
 require_file "packages/target-aios-gui/package.toml"
 require_file "packages/target-aios-gui/README.md"
 require_executable "packages/target-aios-gui/tools/qemu"
+require_executable "packages/target-aios-gui/tools/publish"
 require_executable "packages/target-aios-gui/tools/aios"
 require_file "packages/target-aios-gui/buildroot/configs/aios_gui_x86_64_defconfig"
 require_file "packages/target-aios-gui/buildroot/configs/aios_gui_aarch64_defconfig"
@@ -32,10 +33,13 @@ require_file "packages/target-aios-gui/buildroot/overlays/rootfs/init"
 
 require_file "packages/target-aios-service/package.toml"
 require_executable "packages/target-aios-service/tools/qemu"
+require_executable "packages/target-aios-service/tools/publish"
 
 sh -n "${ROOT_DIR}/packages/target-aios-gui/tools/qemu"
+sh -n "${ROOT_DIR}/packages/target-aios-gui/tools/publish"
 sh -n "${ROOT_DIR}/packages/target-aios-gui/tools/aios"
 sh -n "${ROOT_DIR}/packages/target-aios-service/tools/qemu"
+sh -n "${ROOT_DIR}/packages/target-aios-service/tools/publish"
 
 if ! grep -q 'types = .*"target"' "${ROOT_DIR}/packages/target-aios-gui/package.toml"; then
   echo "target-aios-gui package.toml must declare target type" >&2

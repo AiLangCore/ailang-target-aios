@@ -8,7 +8,7 @@ shift 2 || true
 target="aios-gui"
 artifact_type="img"
 out_dir="dist-aios"
-target_version="0.0.1-alpha.3"
+target_version="0.0.1-alpha.4"
 base_version="${AIOS_BASE_VERSION:-0.0.1-alpha.1}"
 arch="${AIOS_ARCH:-x86_64}"
 splash_background=""
