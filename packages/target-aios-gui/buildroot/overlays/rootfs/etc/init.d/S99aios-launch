@@ -1,0 +1,17 @@
+#!/bin/sh
+
+case "$1" in
+  start)
+    if [ -x /opt/aios/bin/aios-launch ]; then
+      /opt/aios/bin/aios-launch
+    fi
+    ;;
+  stop|restart|reload)
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|reload}"
+    exit 1
+    ;;
+esac
+
+exit 0

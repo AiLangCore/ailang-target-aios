@@ -1,0 +1,125 @@
+#!/bin/sh
+set -eu
+
+operation="${1:-}"
+project="${2:-}"
+shift 2 || true
+
+image=""
+device=""
+assume_yes=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --image)
+      image="${2:-}"
+      shift 2
+      ;;
+    --image=*)
+      image="${1#--image=}"
+      shift
+      ;;
+    --device)
+      device="${2:-}"
+      shift 2
+      ;;
+    --device=*)
+      device="${1#--device=}"
+      shift
+      ;;
+    --yes|-y)
+      assume_yes=1
+      shift
+      ;;
+    --target-option)
+      assignment="${2:-}"
+      name="${assignment%%=*}"
+      value="${assignment#*=}"
+      case "$name" in
+        device) device="$value" ;;
+        image) image="$value" ;;
+        yes) assume_yes="$value" ;;
+      esac
+      shift 2
+      ;;
+    --target-option=*)
+      assignment="${1#--target-option=}"
+      name="${assignment%%=*}"
+      value="${assignment#*=}"
+      case "$name" in
+        device) device="$value" ;;
+        image) image="$value" ;;
+        yes) assume_yes="$value" ;;
+      esac
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$image" ]; then
+  if [ -n "$project" ] && [ -f "$project/dist-aios/sdcard.img" ]; then
+    image="$project/dist-aios/sdcard.img"
+  elif [ -f "dist-aios/sdcard.img" ]; then
+    image="dist-aios/sdcard.img"
+  fi
+fi
+
+if [ -z "$image" ] || [ ! -f "$image" ]; then
+  echo 'Err#err1(code=AIOS028 message="AiOS flash requires --image <sdcard.img> or dist-aios/sdcard.img." nodeId=aios)' >&2
+  exit 2
+fi
+
+if [ -z "$device" ]; then
+  echo 'Err#err1(code=AIOS028 message="AiOS flash requires --device <block-device>. Refusing to guess removable media." nodeId=aios)' >&2
+  exit 2
+fi
+
+case "$assume_yes" in
+  1|true|yes) ;;
+  *)
+    echo "Err#err1(code=AIOS028 message=\"AiOS flash refuses to write without --yes. This will overwrite $device.\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
+run_privileged() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo 'Err#err1(code=AIOS028 message="AiOS flash requires root privileges or sudo." nodeId=aios)' >&2
+    exit 2
+  fi
+}
+
+host_os="$(uname -s 2>/dev/null || echo unknown)"
+case "$host_os" in
+  Darwin)
+    if ! command -v diskutil >/dev/null 2>&1; then
+      echo 'Err#err1(code=AIOS028 message="AiOS flash on macOS requires diskutil." nodeId=aios)' >&2
+      exit 2
+    fi
+    diskutil unmountDisk "$device" >/dev/null
+    run_privileged dd if="$image" of="$device" bs=4m conv=sync
+    diskutil eject "$device" >/dev/null || true
+    ;;
+  Linux)
+    if [ ! -b "$device" ]; then
+      echo "Err#err1(code=AIOS028 message=\"AiOS flash device is not a block device: $device\" nodeId=aios)" >&2
+      exit 2
+    fi
+    run_privileged umount "${device}"* 2>/dev/null || true
+    run_privileged dd if="$image" of="$device" bs=4M conv=fsync status=progress
+    run_privileged sync
+    ;;
+  *)
+    echo "Err#err1(code=AIOS028 message=\"AiOS flash is not supported on this host: $host_os\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
+echo "Ok#ok1(type=string value=\"$device\")"

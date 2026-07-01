@@ -11,6 +11,7 @@ case "$(uname -m 2>/dev/null || true)" in
   arm64|aarch64) default_arch="aarch64" ;;
 esac
 arch="${AIOS_ARCH:-$default_arch}"
+profile="${AIOS_PROFILE:-qemu}"
 buildroot_version="${AIOS_BUILDROOT_VERSION:-2026.02.3}"
 from_dir=""
 boot_mode="qemu-kernel"
@@ -28,6 +29,7 @@ apply_target_option() {
   fi
   case "$name" in
     arch) arch="$value" ;;
+    profile) profile="$value" ;;
     boot) boot_mode="$value" ;;
     image) image_format="$value" ;;
     partition) partition="$value" ;;
@@ -55,6 +57,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --arch=*)
       arch="${1#--arch=}"
+      shift
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --profile=*)
+      profile="${1#--profile=}"
       shift
       ;;
     --buildroot-version)
@@ -120,8 +130,20 @@ case "$arch" in
     ;;
 esac
 
+case "$profile" in
+  qemu)
+    ;;
+  rpi|pi3b|pi3bplus|pi3bplus-7touch|pi4|pi5)
+    arch="aarch64"
+    ;;
+  *)
+    echo "Err#err1(code=AIOS025 message=\"Unsupported AiOS profile: $profile\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
 case "$boot_mode" in
-  qemu-kernel) ;;
+  qemu-kernel|raspberry-pi-firmware) ;;
   disk|iso|uefi)
     echo "Err#err1(code=AIOS011 message=\"AiOS boot mode is declared but not implemented yet: $boot_mode\" nodeId=aios)" >&2
     exit 2
@@ -133,7 +155,7 @@ case "$boot_mode" in
 esac
 
 case "$image_format" in
-  cpio.gz) ;;
+  cpio.gz|sdcard.img) ;;
   ext4|squashfs|tar.gz|iso)
     echo "Err#err1(code=AIOS012 message=\"AiOS image format is declared but not implemented yet: $image_format\" nodeId=aios)" >&2
     exit 2
@@ -145,7 +167,7 @@ case "$image_format" in
 esac
 
 case "$partition" in
-  none) ;;
+  none|mbr) ;;
   mbr|gpt)
     echo "Err#err1(code=AIOS013 message=\"AiOS partition mode is declared but not implemented yet: $partition\" nodeId=aios)" >&2
     exit 2
@@ -174,8 +196,13 @@ done
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 package_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 cache_root="${AIOS_CACHE_ROOT:-${HOME:-.}/.ailang/cache/aios}"
-base_dir="$cache_root/base/$target/$version/$arch"
-build_dir="$cache_root/buildroot-work/$target/$version/$arch"
+if [ "$profile" = "qemu" ]; then
+  base_dir="$cache_root/base/$target/$version/$arch"
+  build_dir="$cache_root/buildroot-work/$target/$version/$arch"
+else
+  base_dir="$cache_root/base/$target/$version/$profile/$arch"
+  build_dir="$cache_root/buildroot-work/$target/$version/$profile/$arch"
+fi
 buildroot_cache_dir="$cache_root/buildroot/$buildroot_version"
 
 host_os() {
@@ -219,32 +246,54 @@ hash_file() {
 }
 
 defconfig_for() {
-  case "$target:$arch" in
-    aios-gui:x86_64)
+  case "$target:$profile:$arch" in
+    aios-gui:qemu:x86_64)
       printf '%s\n' "$package_root/buildroot/configs/aios_gui_x86_64_defconfig"
       ;;
-    aios-gui:aarch64)
+    aios-gui:qemu:aarch64)
       printf '%s\n' "$package_root/buildroot/configs/aios_gui_aarch64_defconfig"
       ;;
+    aios-gui:rpi:aarch64|aios-gui:pi3b:aarch64|aios-gui:pi3bplus:aarch64|aios-gui:pi3bplus-7touch:aarch64)
+      printf '%s\n' "buildroot:raspberrypi3_64_defconfig"
+      ;;
+    aios-gui:pi4:aarch64)
+      printf '%s\n' "buildroot:raspberrypi4_64_defconfig"
+      ;;
+    aios-gui:pi5:aarch64)
+      printf '%s\n' "buildroot:raspberrypi5_defconfig"
+      ;;
     *)
-      echo "Err#err1(code=AIOS001 message=\"No Buildroot defconfig for $target/$arch\" nodeId=aios)" >&2
+      echo "Err#err1(code=AIOS001 message=\"No Buildroot defconfig for $target/$profile/$arch\" nodeId=aios)" >&2
       exit 2
       ;;
   esac
 }
 
 kernel_fragment_for() {
-  case "$target:$arch" in
-    aios-gui:x86_64)
+  case "$target:$profile:$arch" in
+    aios-gui:qemu:x86_64)
       printf '%s\n' "$package_root/buildroot/kernel/aios_gui_x86_64.fragment"
       ;;
-    aios-gui:aarch64)
+    aios-gui:qemu:aarch64)
       printf '%s\n' "$package_root/buildroot/kernel/aios_gui_aarch64.fragment"
       ;;
+    aios-gui:rpi:aarch64|aios-gui:pi3b:aarch64|aios-gui:pi3bplus:aarch64|aios-gui:pi4:aarch64|aios-gui:pi5:aarch64)
+      printf '%s\n' ""
+      ;;
+    aios-gui:pi3bplus-7touch:aarch64)
+      printf '%s\n' "$package_root/buildroot/kernel/aios_gui_pi3bplus_7touch.fragment"
+      ;;
     *)
-      echo "Err#err1(code=AIOS001 message=\"No AiOS kernel fragment for $target/$arch\" nodeId=aios)" >&2
+      echo "Err#err1(code=AIOS001 message=\"No AiOS kernel fragment for $target/$profile/$arch\" nodeId=aios)" >&2
       exit 2
       ;;
+  esac
+}
+
+base_image_for() {
+  case "$profile" in
+    qemu) printf '%s\n' "rootfs.cpio.gz" ;;
+    rpi|pi3b|pi3bplus|pi3bplus-7touch|pi4|pi5) printf '%s\n' "sdcard.img" ;;
   esac
 }
 
@@ -278,8 +327,13 @@ case "$command" in
     ;;
 
   verify-base)
-    if [ ! -f "$base_dir/manifest.toml" ] || [ ! -f "$base_dir/bzImage" ] || [ ! -f "$base_dir/rootfs.cpio.gz" ]; then
-      echo "Err#err1(code=AIOS004 message=\"AiOS base is missing for $target $version $arch\" nodeId=aios)" >&2
+    base_image=$(base_image_for)
+    if [ ! -f "$base_dir/manifest.toml" ] || [ ! -f "$base_dir/$base_image" ]; then
+      echo "Err#err1(code=AIOS004 message=\"AiOS base is missing for $target $version $profile $arch\" nodeId=aios)" >&2
+      exit 2
+    fi
+    if [ "$profile" = "qemu" ] && [ ! -f "$base_dir/bzImage" ]; then
+      echo "Err#err1(code=AIOS004 message=\"AiOS QEMU base is missing kernel for $target $version $arch\" nodeId=aios)" >&2
       exit 2
     fi
     echo "Ok#ok1(type=string value=\"$base_dir\")"
@@ -290,14 +344,21 @@ case "$command" in
       echo 'Err#err1(code=AIOS001 message="import-base requires --from <artifact-directory>" nodeId=aios)' >&2
       exit 2
     fi
-    if [ ! -f "$from_dir/manifest.toml" ] || [ ! -f "$from_dir/bzImage" ] || [ ! -f "$from_dir/rootfs.cpio.gz" ]; then
-      echo "Err#err1(code=AIOS004 message=\"AiOS base artifact is missing manifest.toml, bzImage, or rootfs.cpio.gz: $from_dir\" nodeId=aios)" >&2
+    base_image=$(base_image_for)
+    if [ ! -f "$from_dir/manifest.toml" ] || [ ! -f "$from_dir/$base_image" ]; then
+      echo "Err#err1(code=AIOS004 message=\"AiOS base artifact is missing manifest.toml or $base_image: $from_dir\" nodeId=aios)" >&2
+      exit 2
+    fi
+    if [ "$profile" = "qemu" ] && [ ! -f "$from_dir/bzImage" ]; then
+      echo "Err#err1(code=AIOS004 message=\"AiOS QEMU base artifact is missing bzImage: $from_dir\" nodeId=aios)" >&2
       exit 2
     fi
     mkdir -p "$base_dir"
     cp "$from_dir/manifest.toml" "$base_dir/manifest.toml"
-    cp "$from_dir/bzImage" "$base_dir/bzImage"
-    cp "$from_dir/rootfs.cpio.gz" "$base_dir/rootfs.cpio.gz"
+    cp "$from_dir/$base_image" "$base_dir/$base_image"
+    if [ "$profile" = "qemu" ]; then
+      cp "$from_dir/bzImage" "$base_dir/bzImage"
+    fi
     echo "Ok#ok1(type=string value=\"$base_dir\")"
     ;;
 
@@ -318,27 +379,58 @@ case "$command" in
     defconfig="$build_dir/aios.defconfig"
     kernel_fragment=$(kernel_fragment_for)
     kernel_image=$(kernel_image_for)
-    if [ ! -f "$kernel_fragment" ]; then
+    if [ -n "$kernel_fragment" ] && [ ! -f "$kernel_fragment" ]; then
       echo "Err#err1(code=AIOS006 message=\"AiOS kernel fragment is missing: $kernel_fragment\" nodeId=aios)" >&2
       exit 2
     fi
     mkdir -p "$build_dir" "$base_dir"
-    sed \
-      -e "s|@AIOS_ROOTFS_OVERLAY@|$package_root/buildroot/overlays/rootfs|g" \
-      -e "s|@AIOS_KERNEL_FRAGMENT@|$kernel_fragment|g" \
-      "$defconfig_template" > "$defconfig"
+    case "$defconfig_template" in
+      buildroot:*)
+        upstream_defconfig="${defconfig_template#buildroot:}"
+        if [ ! -f "$buildroot_dir/configs/$upstream_defconfig" ]; then
+          echo "Err#err1(code=AIOS006 message=\"Buildroot profile defconfig is missing: configs/$upstream_defconfig\" nodeId=aios)" >&2
+          exit 2
+        fi
+        cat "$buildroot_dir/configs/$upstream_defconfig" > "$defconfig"
+        {
+          printf '\n'
+          printf 'BR2_ROOTFS_OVERLAY="%s"\n' "$package_root/buildroot/overlays/rootfs"
+          printf 'BR2_PACKAGE_OPENSSL=y\n'
+          printf 'BR2_PACKAGE_CA_CERTIFICATES=y\n'
+          if [ -n "$kernel_fragment" ]; then
+            printf 'BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="%s"\n' "$kernel_fragment"
+          fi
+        } >> "$defconfig"
+        ;;
+      *)
+        sed \
+          -e "s|@AIOS_ROOTFS_OVERLAY@|$package_root/buildroot/overlays/rootfs|g" \
+          -e "s|@AIOS_KERNEL_FRAGMENT@|$kernel_fragment|g" \
+          "$defconfig_template" > "$defconfig"
+        ;;
+    esac
     "$make_bin" -C "$buildroot_dir" O="$build_dir" HOSTCC="$cc_bin" BR2_DEFCONFIG="$defconfig" defconfig
     "$make_bin" -C "$buildroot_dir" O="$build_dir" HOSTCC="$cc_bin"
-    if [ ! -f "$build_dir/images/$kernel_image" ] || [ ! -f "$build_dir/images/rootfs.cpio.gz" ]; then
-      echo "Err#err1(code=AIOS006 message=\"Buildroot completed without expected $kernel_image/rootfs.cpio.gz outputs.\" nodeId=aios)" >&2
-      exit 2
+    base_image=$(base_image_for)
+    if [ "$profile" = "qemu" ]; then
+      if [ ! -f "$build_dir/images/$kernel_image" ] || [ ! -f "$build_dir/images/rootfs.cpio.gz" ]; then
+        echo "Err#err1(code=AIOS006 message=\"Buildroot completed without expected $kernel_image/rootfs.cpio.gz outputs.\" nodeId=aios)" >&2
+        exit 2
+      fi
+      cp "$build_dir/images/$kernel_image" "$base_dir/bzImage"
+      cp "$build_dir/images/rootfs.cpio.gz" "$base_dir/rootfs.cpio.gz"
+    else
+      if [ ! -f "$build_dir/images/sdcard.img" ]; then
+        echo "Err#err1(code=AIOS006 message=\"Buildroot completed without expected Raspberry Pi sdcard.img output.\" nodeId=aios)" >&2
+        exit 2
+      fi
+      cp "$build_dir/images/sdcard.img" "$base_dir/sdcard.img"
     fi
-    cp "$build_dir/images/$kernel_image" "$base_dir/bzImage"
-    cp "$build_dir/images/rootfs.cpio.gz" "$base_dir/rootfs.cpio.gz"
     cat > "$base_dir/manifest.toml" <<EOF
 schema = "ailang.aios.base.v1"
 aiosVersion = "$version"
 target = "$target"
+profile = "$profile"
 arch = "$arch"
 buildrootDir = "$buildroot_dir"
 buildrootVersion = "$buildroot_version"
@@ -347,16 +439,16 @@ kernelFragment = "$kernel_fragment"
 libc = "glibc"
 kernel = "bzImage"
 kernelImage = "$kernel_image"
-initramfs = "rootfs.cpio.gz"
-kernelHash = "$(hash_file "$base_dir/bzImage")"
-initramfsHash = "$(hash_file "$base_dir/rootfs.cpio.gz")"
+image = "$base_image"
+kernelHash = "$(if [ -f "$base_dir/bzImage" ]; then hash_file "$base_dir/bzImage"; else echo ""; fi)"
+imageHash = "$(hash_file "$base_dir/$base_image")"
 aivmAbi = 1
 EOF
     echo "Ok#ok1(type=string value=\"$base_dir\")"
     ;;
 
   *)
-    echo 'Usage: ailang aios <fetch-buildroot|build-base|verify-base|import-base|list-base|base-dir> [--target aios-gui] [--version 0.0.1-alpha.1] [--arch x86_64|aarch64] [--buildroot-version 2026.02.3] [--from artifact-dir]' >&2
+    echo 'Usage: ailang aios <fetch-buildroot|build-base|verify-base|import-base|list-base|base-dir> [--target aios-gui] [--version 0.0.1-alpha.1] [--arch x86_64|aarch64] [--profile qemu|pi3bplus|pi3bplus-7touch|pi4|pi5] [--buildroot-version 2026.02.3] [--from artifact-dir]' >&2
     exit 2
     ;;
 esac

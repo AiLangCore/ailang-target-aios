@@ -32,8 +32,19 @@ profiles/pi4
 profiles/pi5
 ```
 
-The initial fully exercised profile is `qemu`. Board profiles are added as
-target-owned profile modules over the same package contract.
+The initial fully exercised profile is `qemu`. Raspberry Pi profiles are
+target-owned profile modules over the same package contract:
+
+```text
+pi3bplus -> Buildroot raspberrypi3_64_defconfig
+pi3bplus-7touch -> Buildroot raspberrypi3_64_defconfig + official 7-inch touch fragment
+pi4      -> Buildroot raspberrypi4_64_defconfig
+pi5      -> Buildroot raspberrypi5_defconfig
+```
+
+`pi3bplus-7touch` is the first hardware bring-up profile and is intended to
+cover the Raspberry Pi 3B/3B+ with the official Raspberry Pi 7-inch DSI
+touchscreen.
 
 ## Target Contract
 
@@ -84,7 +95,21 @@ without forcing every developer to rebuild the Linux base.
 Buildroot base creation requires a Linux build host:
 
 ```bash
-ailang aios build-base --target aios-gui --version 0.0.1-alpha.1 --arch aarch64
+ailang aios build-base \
+  --target aios-gui \
+  --version 0.0.1-alpha.1 \
+  --arch aarch64 \
+  --profile qemu
+```
+
+Raspberry Pi bases are profile-specific and produce `sdcard.img`:
+
+```bash
+ailang aios build-base \
+  --target aios-gui \
+  --version 0.0.1-alpha.1 \
+  --arch aarch64 \
+  --profile pi3bplus
 ```
 
 macOS and Windows development hosts consume an existing cached or imported base
@@ -94,8 +119,13 @@ image when running or publishing:
 ailang publish . \
   --target aios-gui \
   --target-option arch=aarch64 \
+  --target-option profile=qemu \
   --target-option base-version=0.0.1-alpha.1
 ```
+
+Base images can be built on GitHub Actions with the manual `Build AiOS Base
+Images` workflow. The uploaded artifact layout is compatible with
+`ailang aios import-base`.
 
 ## Display Backends
 

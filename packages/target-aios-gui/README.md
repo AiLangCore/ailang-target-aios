@@ -36,8 +36,22 @@ $AIOS_CACHE_ROOT/base/aios-gui/<aios-version>/<arch>/
 `bzImage` is the stable cached kernel filename used by the target package. For
 `aarch64` builds, the Buildroot `Image` output is copied into that slot.
 
+Hardware profiles use profile-specific cache paths so board images do not
+collide with generic QEMU aarch64 bases:
+
+```text
+$AIOS_CACHE_ROOT/base/aios-gui/<aios-version>/<profile>/<arch>/
+  manifest.toml
+  sdcard.img
+```
+
 Application publish/run injects the current app payload and Linux runtime
 artifacts into that cached base. It does not rebuild Buildroot for every app.
+
+For Raspberry Pi profiles, publish copies the reusable `sdcard.img` base image
+and injects `app.aibc1`, `aivm`, and `aivectra` into the root partition.
+Because that requires loopback mounting, Raspberry Pi publish currently runs on
+Linux builders. macOS developers should consume a published image artifact.
 
 ## Build Host
 
@@ -60,12 +74,21 @@ ailang aios build-base \
   --target aios-gui \
   --version 0.0.1-alpha.1 \
   --arch x86_64 \
+  --profile qemu \
   --buildroot-version 2026.02.3
 
 ailang aios build-base \
   --target aios-gui \
   --version 0.0.1-alpha.1 \
   --arch aarch64 \
+  --profile qemu \
+  --buildroot-version 2026.02.3
+
+ailang aios build-base \
+  --target aios-gui \
+  --version 0.0.1-alpha.1 \
+  --arch aarch64 \
+  --profile pi3bplus \
   --buildroot-version 2026.02.3
 ```
 
@@ -80,7 +103,14 @@ ailang aios verify-base \
 ailang aios verify-base \
   --target aios-gui \
   --version 0.0.1-alpha.1 \
-  --arch aarch64
+  --arch aarch64 \
+  --profile qemu
+
+ailang aios verify-base \
+  --target aios-gui \
+  --version 0.0.1-alpha.1 \
+  --arch aarch64 \
+  --profile pi3bplus
 ```
 
 Import a base artifact downloaded from CI:
@@ -96,6 +126,7 @@ ailang aios import-base \
   --target aios-gui \
   --version 0.0.1-alpha.1 \
   --arch aarch64 \
+  --profile qemu \
   --from ./aios-gui-0.0.1-alpha.1-aarch64
 ```
 
@@ -169,9 +200,17 @@ Implemented:
 ```text
 --arch x86_64
 --arch aarch64
+--profile qemu
+--profile pi3bplus
+--profile pi3bplus-7touch
+--profile pi4
+--profile pi5
 --boot qemu-kernel
+--boot raspberry-pi-firmware
 --image cpio.gz
+--image sdcard.img
 --partition none
+--partition mbr
 --feature network
 --splash-background <svg>
 --splash-foreground <svg>
@@ -218,7 +257,82 @@ Declared but not implemented yet:
 ```
 
 Unsupported or not-yet-implemented options fail deterministically before image
+creation.
+
+## Raspberry Pi Bring-Up Status
+
+Implemented now:
+
+```text
+--profile pi3bplus
+--profile pi4
+--profile pi5
+--profile pi3bplus-7touch
+profile-specific base cache paths
+Buildroot upstream Raspberry Pi defconfig selection
+Raspberry Pi sdcard.img base artifact import/verify
+```
+
+Linux publish command for a Raspberry Pi 3B/3B+ app image:
+
+```sh
+ailang publish . \
+  --target aios-gui \
+  --target-option arch=aarch64 \
+  --target-option profile=pi3bplus-7touch \
+  --target-option base-version=0.0.1-alpha.1 \
+  --out dist-aios
+```
+
+The output image is:
+
+```text
+dist-aios/sdcard.img
+```
+
+Initial guarded flash support is available for explicit devices:
+
+```sh
+packages/target-aios-gui/tools/flash flash . \
+  --image dist-aios/sdcard.img \
+  --device /dev/diskN \
+  --yes
+```
+
+The flash helper refuses to guess devices and refuses to write without `--yes`.
+
+Next required slice:
+
+```text
+schedule/promote image artifacts for release channels
+```
 publish or base build begins.
+
+## Capability Bring-Up
+
+The first Raspberry Pi base images are intended to provide:
+
+```text
+Ethernet networking through Buildroot DHCP
+HDMI/display through the Raspberry Pi kernel/firmware stack
+USB keyboard and pointer devices when the kernel profile exposes them
+Official Raspberry Pi 7-inch DSI display and touch on pi3bplus-7touch
+```
+
+Not yet guaranteed:
+
+```text
+Wi-Fi
+Bluetooth
+touch displays
+camera
+GPIO/I2C/SPI packages
+audio
+printer support
+```
+
+Those should be added as explicit target capabilities or optional hardware
+packages rather than hidden assumptions in the base image.
 
 ## Known Follow-Ups
 

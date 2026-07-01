@@ -10,8 +10,9 @@ aivectra = "0.0.1-beta.15"
 aliases = ["aios"]
 defaultRunner = "qemu"
 artifactTypes = ["img", "initramfs"]
-options = ["arch", "base-version", "boot", "image", "partition", "feature", "splash-background", "splash-foreground", "debug-console", "display-backend", "framebuffer-trace", "drm-trace", "event-loop-trace", "evdev-trace", "evdev-deep-trace", "runtime-log-level", "ca-bundle"]
+options = ["arch", "profile", "base-version", "boot", "image", "partition", "feature", "splash-background", "splash-foreground", "debug-console", "display-backend", "framebuffer-trace", "drm-trace", "event-loop-trace", "evdev-trace", "evdev-deep-trace", "runtime-log-level", "ca-bundle"]
 
 [targets.aios-gui.tools]
 run = ["qemu-system-x86_64", "qemu-system-aarch64"]
 publish = []
+flash = ["dd"]

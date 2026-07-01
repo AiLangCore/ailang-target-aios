@@ -1,0 +1,103 @@
+name: Build AiOS Base Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      aios_version:
+        description: "AiOS base image version"
+        required: true
+        default: "0.0.1-alpha.1"
+      buildroot_version:
+        description: "Buildroot version"
+        required: true
+        default: "2026.02.3"
+      profile:
+        description: "Profile to build"
+        required: true
+        default: "pi3bplus"
+        type: choice
+        options:
+          - qemu-aarch64
+          - pi3bplus
+          - pi3bplus-7touch
+          - pi4
+          - pi5
+
+jobs:
+  build-base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Buildroot host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc \
+            build-essential \
+            cpio \
+            file \
+            git \
+            libncurses-dev \
+            rsync \
+            unzip \
+            wget \
+            python3
+
+      - name: Resolve profile
+        id: profile
+        run: |
+          case "${{ inputs.profile }}" in
+            qemu-aarch64)
+              echo "arch=aarch64" >> "$GITHUB_OUTPUT"
+              echo "profile=qemu" >> "$GITHUB_OUTPUT"
+              echo "artifact=aios-gui-${{ inputs.aios_version }}-qemu-aarch64" >> "$GITHUB_OUTPUT"
+              ;;
+            pi3bplus|pi3bplus-7touch|pi4|pi5)
+              echo "arch=aarch64" >> "$GITHUB_OUTPUT"
+              echo "profile=${{ inputs.profile }}" >> "$GITHUB_OUTPUT"
+              echo "artifact=aios-gui-${{ inputs.aios_version }}-${{ inputs.profile }}-aarch64" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unsupported profile: ${{ inputs.profile }}" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Fetch Buildroot
+        run: |
+          packages/target-aios-gui/tools/aios fetch-buildroot \
+            --buildroot-version "${{ inputs.buildroot_version }}"
+
+      - name: Build base image
+        run: |
+          packages/target-aios-gui/tools/aios build-base \
+            --target aios-gui \
+            --version "${{ inputs.aios_version }}" \
+            --arch "${{ steps.profile.outputs.arch }}" \
+            --profile "${{ steps.profile.outputs.profile }}" \
+            --buildroot-version "${{ inputs.buildroot_version }}"
+
+      - name: Stage artifact
+        run: |
+          base_dir="$(packages/target-aios-gui/tools/aios base-dir \
+            --target aios-gui \
+            --version "${{ inputs.aios_version }}" \
+            --arch "${{ steps.profile.outputs.arch }}" \
+            --profile "${{ steps.profile.outputs.profile }}")"
+          mkdir -p ".artifacts/${{ steps.profile.outputs.artifact }}"
+          cp "$base_dir/manifest.toml" ".artifacts/${{ steps.profile.outputs.artifact }}/manifest.toml"
+          if [ "${{ steps.profile.outputs.profile }}" = "qemu" ]; then
+            cp "$base_dir/bzImage" ".artifacts/${{ steps.profile.outputs.artifact }}/bzImage"
+            cp "$base_dir/rootfs.cpio.gz" ".artifacts/${{ steps.profile.outputs.artifact }}/rootfs.cpio.gz"
+          else
+            cp "$base_dir/sdcard.img" ".artifacts/${{ steps.profile.outputs.artifact }}/sdcard.img"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.profile.outputs.artifact }}
+          path: .artifacts/${{ steps.profile.outputs.artifact }}
+          if-no-files-found: error
+          retention-days: 14

@@ -15,6 +15,7 @@ case "$(uname -m 2>/dev/null || true)" in
   arm64|aarch64) default_arch="aarch64" ;;
 esac
 arch="${AIOS_ARCH:-$default_arch}"
+profile="${AIOS_PROFILE:-qemu}"
 splash_background=""
 splash_foreground=""
 boot_mode="qemu-kernel"
@@ -43,6 +44,7 @@ apply_target_option() {
   fi
   case "$name" in
     arch) arch="$value" ;;
+    profile) profile="$value" ;;
     base-version) base_version="$value" ;;
     boot) boot_mode="$value" ;;
     image) image_format="$value" ;;
@@ -94,6 +96,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --arch=*)
       arch="${1#--arch=}"
+      shift
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --profile=*)
+      profile="${1#--profile=}"
       shift
       ;;
     --boot)
@@ -211,8 +221,24 @@ case "$arch" in
     ;;
 esac
 
+case "$profile" in
+  qemu)
+    ;;
+  rpi|pi3b|pi3bplus|pi3bplus-7touch|pi4|pi5)
+    arch="aarch64"
+    if [ "$operation" = "run" ]; then
+      echo "Err#err1(code=AIOS025 message=\"AiOS profile $profile is a hardware image profile, not a QEMU kernel runner profile. Use profile=qemu for QEMU or publish/flash a Raspberry Pi image.\" nodeId=aios)" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    echo "Err#err1(code=AIOS025 message=\"Unsupported AiOS profile: $profile\" nodeId=aios)" >&2
+    exit 2
+    ;;
+esac
+
 case "$boot_mode" in
-  qemu-kernel) ;;
+  qemu-kernel|raspberry-pi-firmware) ;;
   disk|iso|uefi)
     echo "Err#err1(code=AIOS011 message=\"AiOS boot mode is declared but not implemented yet: $boot_mode\" nodeId=aios)" >&2
     exit 2
@@ -224,7 +250,7 @@ case "$boot_mode" in
 esac
 
 case "$image_format" in
-  cpio.gz) ;;
+  cpio.gz|sdcard.img) ;;
   ext4|squashfs|tar.gz|iso)
     echo "Err#err1(code=AIOS012 message=\"AiOS image format is declared but not implemented yet: $image_format\" nodeId=aios)" >&2
     exit 2
@@ -236,7 +262,7 @@ case "$image_format" in
 esac
 
 case "$partition" in
-  none) ;;
+  none|mbr) ;;
   mbr|gpt)
     echo "Err#err1(code=AIOS013 message=\"AiOS partition mode is declared but not implemented yet: $partition\" nodeId=aios)" >&2
     exit 2
@@ -326,20 +352,52 @@ fi
 
 ailang_bin="${AILANG_BIN:-ailang}"
 cache_root="${AIOS_CACHE_ROOT:-${HOME:-.}/.ailang/cache/aios}"
-base_dir="$cache_root/base/$target/$base_version/$arch"
+if [ "$profile" = "qemu" ]; then
+  base_dir="$cache_root/base/$target/$base_version/$arch"
+else
+  base_dir="$cache_root/base/$target/$base_version/$profile/$arch"
+fi
 base_manifest="$base_dir/manifest.toml"
 base_kernel="$base_dir/bzImage"
 base_initramfs="$base_dir/rootfs.cpio.gz"
+base_sdcard="$base_dir/sdcard.img"
 tmp_root=""
+mounted_root=""
+loop_device=""
 published_splash_background=""
 published_splash_foreground=""
 
 cleanup() {
+  if [ -n "$mounted_root" ] && mountpoint -q "$mounted_root" 2>/dev/null; then
+    if [ "$(id -u)" = "0" ]; then
+      umount "$mounted_root" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo umount "$mounted_root" 2>/dev/null || true
+    fi
+  fi
+  if [ -n "$loop_device" ]; then
+    if [ "$(id -u)" = "0" ]; then
+      losetup -d "$loop_device" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo losetup -d "$loop_device" 2>/dev/null || true
+    fi
+  fi
   if [ -n "$tmp_root" ] && [ -d "$tmp_root" ]; then
     rm -rf "$tmp_root"
   fi
 }
 trap cleanup EXIT INT TERM
+
+run_privileged() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo 'Err#err1(code=AIOS027 message="AiOS Raspberry Pi image injection requires root privileges or sudo for loopback mounting." nodeId=aios)' >&2
+    exit 2
+  fi
+}
 
 resolve_runtime_bin() {
   env_name="$1"
@@ -499,25 +557,35 @@ inject_payload_initramfs() {
 
   tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/aios-rootfs-XXXXXX")"
   gzip -dc "$base_initramfs" | (cd "$tmp_root" && cpio -idmu >/dev/null 2>&1)
+  stage_payload_root "$tmp_root" "$runtime_aivm" "$runtime_aivectra"
+  emit_launcher "$tmp_root/init"
+
+  (cd "$tmp_root" && find . | sort | cpio -o -H newc 2>/dev/null | gzip -n > "$output_initramfs")
+}
+
+stage_payload_root() {
+  payload_root="$1"
+  runtime_aivm="$2"
+  runtime_aivectra="$3"
 
   runtime_info="$(file "$runtime_aivectra" 2>/dev/null || true)"
   if printf '%s\n' "$runtime_info" | grep -Fq '/lib64/ld-linux-x86-64.so.2' &&
-     [ ! -f "$tmp_root/lib64/ld-linux-x86-64.so.2" ]; then
+     [ ! -f "$payload_root/lib64/ld-linux-x86-64.so.2" ]; then
     echo 'Err#err1(code=AIOS015 message="AiOS base is missing glibc loader required by the Linux AiVectra runtime. Rebuild/import a glibc AiOS base." nodeId=aios)' >&2
     exit 2
   fi
 
-  mkdir -p "$tmp_root/opt/aios/app" "$tmp_root/opt/aios/bin" "$tmp_root/opt/aios/etc"
-  cp "$app_aibc1" "$tmp_root/opt/aios/app/app.aibc1"
-  cp "$runtime_aivm" "$tmp_root/opt/aios/bin/aivm"
-  cp "$runtime_aivectra" "$tmp_root/opt/aios/bin/aivectra"
-  chmod +x "$tmp_root/opt/aios/bin/aivm" "$tmp_root/opt/aios/bin/aivectra"
+  mkdir -p "$payload_root/opt/aios/app" "$payload_root/opt/aios/bin" "$payload_root/opt/aios/etc"
+  cp "$app_aibc1" "$payload_root/opt/aios/app/app.aibc1"
+  cp "$runtime_aivm" "$payload_root/opt/aios/bin/aivm"
+  cp "$runtime_aivectra" "$payload_root/opt/aios/bin/aivectra"
+  chmod +x "$payload_root/opt/aios/bin/aivm" "$payload_root/opt/aios/bin/aivectra"
   if [ "$network_enabled" = "1" ]; then
     resolved_ca_bundle="$(resolve_ca_bundle || true)"
     if [ -n "$resolved_ca_bundle" ]; then
-      mkdir -p "$tmp_root/etc/ssl/certs" "$tmp_root/usr/lib/ssl"
-      cp "$resolved_ca_bundle" "$tmp_root/etc/ssl/certs/ca-certificates.crt"
-      ln -sf /etc/ssl/certs/ca-certificates.crt "$tmp_root/usr/lib/ssl/cert.pem"
+      mkdir -p "$payload_root/etc/ssl/certs" "$payload_root/usr/lib/ssl"
+      cp "$resolved_ca_bundle" "$payload_root/etc/ssl/certs/ca-certificates.crt"
+      ln -sf /etc/ssl/certs/ca-certificates.crt "$payload_root/usr/lib/ssl/cert.pem"
     else
       echo 'Err#err1(code=AIOS018 message="AiOS network image requires a CA bundle for HTTPS, but none was found on the host system. Install a CA bundle (e.g., via Homebrew) or set AIOS_CA_BUNDLE to a valid path." nodeId=aios)' >&2
       exit 1
@@ -526,24 +594,24 @@ inject_payload_initramfs() {
   image_splash_background=""
   image_splash_foreground=""
   if [ -n "$splash_background" ] && [ -f "$splash_background" ]; then
-    mkdir -p "$tmp_root/opt/aios/splash"
-    cp "$splash_background" "$tmp_root/opt/aios/splash/background.svg"
+    mkdir -p "$payload_root/opt/aios/splash"
+    cp "$splash_background" "$payload_root/opt/aios/splash/background.svg"
     image_splash_background="/opt/aios/splash/background.svg"
   fi
   if [ -n "$splash_foreground" ] && [ -f "$splash_foreground" ]; then
-    mkdir -p "$tmp_root/opt/aios/splash"
-    cp "$splash_foreground" "$tmp_root/opt/aios/splash/foreground.svg"
+    mkdir -p "$payload_root/opt/aios/splash"
+    cp "$splash_foreground" "$payload_root/opt/aios/splash/foreground.svg"
     image_splash_foreground="/opt/aios/splash/foreground.svg"
   fi
-  emit_launcher "$tmp_root/opt/aios/bin/aios-launch"
-  emit_launcher "$tmp_root/init"
+  emit_launcher "$payload_root/opt/aios/bin/aios-launch"
 
-  cat > "$tmp_root/opt/aios/etc/image.toml" <<EOF
+  cat > "$payload_root/opt/aios/etc/image.toml" <<EOF
 schema = "ailang.aios.runtime-image.v1"
 target = "$target"
 aiosVersion = "$target_version"
 arch = "$arch"
 profile = "gui"
+targetProfile = "$profile"
 app = "/opt/aios/app/app.aibc1"
 aivm = "/opt/aios/bin/aivm"
 aivectra = "/opt/aios/bin/aivectra"
@@ -553,13 +621,59 @@ partition = "$partition"
 splashBackground = "$image_splash_background"
 splashForeground = "$image_splash_foreground"
 EOF
-
-  (cd "$tmp_root" && find . | sort | cpio -o -H newc 2>/dev/null | gzip -n > "$output_initramfs")
 }
 
-if [ ! -f "$base_manifest" ] || [ ! -f "$base_kernel" ] || [ ! -f "$base_initramfs" ]; then
-  echo "Err#err1(code=AIOS004 message=\"AiOS GUI base image is not built. Run on Linux: ailang aios build-base --target $target --version $base_version --arch $arch, or import an existing base with that version.\" nodeId=aios)" >&2
-  exit 2
+inject_payload_sdcard() {
+  runtime_aivm="$1"
+  runtime_aivectra="$2"
+  output_sdcard="$3"
+
+  if [ "$(uname -s 2>/dev/null || true)" != "Linux" ] && [ "${AIOS_ALLOW_UNSUPPORTED_HOST:-0}" != "1" ]; then
+    echo "Err#err1(code=AIOS027 message=\"AiOS Raspberry Pi publish requires a Linux host to mount and inject sdcard.img. This host is $(uname -s 2>/dev/null || echo unknown). Use CI/Linux to publish the image, then flash it from macOS.\" nodeId=aios)" >&2
+    exit 2
+  fi
+  for required in losetup mount umount tar; do
+    if ! command -v "$required" >/dev/null 2>&1; then
+      echo "Err#err1(code=AIOS027 message=\"AiOS Raspberry Pi publish requires tool: $required\" nodeId=aios)" >&2
+      exit 2
+    fi
+  done
+
+  cp "$base_sdcard" "$output_sdcard"
+  tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/aios-sdcard-XXXXXX")"
+  mounted_root="$tmp_root/root"
+  payload_root="$tmp_root/payload"
+  mkdir -p "$mounted_root" "$payload_root"
+
+  loop_device="$(run_privileged losetup --find --partscan --show "$output_sdcard")"
+  root_partition=""
+  if [ -b "${loop_device}p2" ]; then
+    root_partition="${loop_device}p2"
+  elif [ -b "${loop_device}2" ]; then
+    root_partition="${loop_device}2"
+  fi
+  if [ -z "$root_partition" ]; then
+    echo "Err#err1(code=AIOS027 message=\"AiOS Raspberry Pi publish could not find root partition for $output_sdcard\" nodeId=aios)" >&2
+    exit 2
+  fi
+
+  run_privileged mount "$root_partition" "$mounted_root"
+  stage_payload_root "$payload_root" "$runtime_aivm" "$runtime_aivectra"
+  (cd "$payload_root" && tar -cf "$tmp_root/payload.tar" .)
+  run_privileged tar -C "$mounted_root" -xf "$tmp_root/payload.tar"
+  run_privileged sync
+}
+
+if [ "$profile" = "qemu" ]; then
+  if [ ! -f "$base_manifest" ] || [ ! -f "$base_kernel" ] || [ ! -f "$base_initramfs" ]; then
+    echo "Err#err1(code=AIOS004 message=\"AiOS GUI base image is not built. Run on Linux: ailang aios build-base --target $target --version $base_version --arch $arch --profile qemu, or import an existing base with that version.\" nodeId=aios)" >&2
+    exit 2
+  fi
+else
+  if [ ! -f "$base_manifest" ] || [ ! -f "$base_sdcard" ]; then
+    echo "Err#err1(code=AIOS004 message=\"AiOS Raspberry Pi base image is not built. Run on Linux: ailang aios build-base --target $target --version $base_version --arch $arch --profile $profile, or import an existing base with that version.\" nodeId=aios)" >&2
+    exit 2
+  fi
 fi
 
 mkdir -p "$out_dir"
@@ -582,7 +696,9 @@ fi
 
 cp "$app_aibc1" "$out_dir/app.aibc1"
 cp "$base_manifest" "$out_dir/base.manifest.toml"
-cp "$base_kernel" "$out_dir/bzImage"
+if [ "$profile" = "qemu" ]; then
+  cp "$base_kernel" "$out_dir/bzImage"
+fi
 if [ -n "$splash_background" ]; then
   published_splash_background="rootfs:/opt/aios/splash/background.svg"
 fi
@@ -620,7 +736,23 @@ if [ -z "$runtime_aivectra" ]; then
   exit 2
 fi
 
-inject_payload_initramfs "$runtime_aivm" "$runtime_aivectra" "$out_dir/rootfs.cpio.gz"
+published_kernel=""
+published_initramfs=""
+published_sdcard=""
+published_boot="$boot_mode"
+published_image="$image_format"
+published_partition="$partition"
+if [ "$profile" = "qemu" ]; then
+  inject_payload_initramfs "$runtime_aivm" "$runtime_aivectra" "$out_dir/rootfs.cpio.gz"
+  published_kernel="bzImage"
+  published_initramfs="rootfs.cpio.gz"
+else
+  inject_payload_sdcard "$runtime_aivm" "$runtime_aivectra" "$out_dir/sdcard.img"
+  published_sdcard="sdcard.img"
+  published_boot="raspberry-pi-firmware"
+  published_image="sdcard.img"
+  published_partition="mbr"
+fi
 
 cat > "$out_dir/manifest.toml" <<EOF
 schema = "ailang.aios.image.v1"
@@ -629,14 +761,16 @@ aiosVersion = "$target_version"
 baseVersion = "$base_version"
 arch = "$arch"
 profile = "gui"
+targetProfile = "$profile"
 artifactType = "$artifact_type"
-boot = "$boot_mode"
-image = "$image_format"
-partition = "$partition"
+boot = "$published_boot"
+image = "$published_image"
+partition = "$published_partition"
 app = "app.aibc1"
 baseManifest = "base.manifest.toml"
-kernel = "bzImage"
-initramfs = "rootfs.cpio.gz"
+kernel = "$published_kernel"
+initramfs = "$published_initramfs"
+sdcard = "$published_sdcard"
 aivm = "rootfs:/opt/aios/bin/aivm"
 aivectra = "rootfs:/opt/aios/bin/aivectra"
 splashBackground = "$published_splash_background"
